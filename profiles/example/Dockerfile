@@ -1,5 +1,6 @@
 ARG BASE_IMAGE=agent-base
-FROM node:24-bookworm-slim AS node
+ARG NODE_IMAGE=node:24-bookworm-slim
+FROM ${NODE_IMAGE} AS node
 FROM ${BASE_IMAGE}
 
 COPY --from=node /usr/local/bin/ /usr/local/bin/

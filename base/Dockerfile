@@ -4,7 +4,7 @@ FROM debian:bookworm-slim
 # read-only mounts, the proxy policy), not the version of the binary. The
 # entrypoint still refuses to start if the merged managed settings lost their
 # teeth, and the auto-updater stays off so nothing moves mid-session.
-# Set a version number here to freeze it instead.
+# Set CLAUDE_CODE_VERSION in the root .env to freeze it instead.
 ARG CLAUDE_CODE_VERSION=latest
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -33,7 +33,8 @@ RUN chmod 0755 /usr/local/sbin/agent-entrypoint \
  && chmod 0755 /etc/agent /etc/agent/base /etc/claude-code \
  && chmod 0644 /etc/agent/base/* /etc/claude-code/managed-mcp.json \
  && jq empty /etc/agent/base/managed-settings.json /etc/claude-code/managed-mcp.json \
- && git config --system --add safe.directory /workspace
+ && git config --system --add safe.directory /workspace \
+ && rm -rf /var/tmp && ln -s /tmp /var/tmp && chmod 0755 /run/lock
 
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/sbin/agent-entrypoint"]

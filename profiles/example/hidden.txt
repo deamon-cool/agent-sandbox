@@ -1,0 +1,5 @@
+# Project paths (files or folders) that always look empty: code or data that must
+# not leave your machine. If git tracks one, also hide .git, or run.sh refuses to
+# start (git history would still hold it), e.g.:
+# src/licensed-engine
+# .git

@@ -2,7 +2,7 @@
 
 Proves from inside a running agent that the protections in the [security model](../README.md#security-model) actually hold. Two parts:
 
-- **Shell suite**: `test/sandbox-check.sh`, mounted read-only at `/etc/agent/test/sandbox-check.sh`, so the agent cannot change what it checks and an edit here needs no rebuild. Privileges, firewall, proxy gates, doc-host and Anthropic API rules, read-only and masked files, the merged Claude Code policy, limits. One line per check, a `RESULT` line at the end.
+- **Shell suite**: `test/sandbox-check.sh`, mounted read-only at `/etc/agent/test/sandbox-check.sh`, so the agent cannot change what it checks and an edit here needs no rebuild. Privileges, firewall, proxy gates, doc-host and Anthropic API rules, read-only, masked and hidden files, the merged Claude Code policy, limits. One line per check, a `RESULT` line at the end.
 - **Tool checks**: the deny rules only Claude Code's own tools can hit (Read, Write, Edit, NotebookEdit, Bash, WebFetch, WebSearch), run by the agent from the prompt below.
 
 Nothing here weakens the sandbox: every probe is either refused by design or goes to a host the policy allows, and the script writes only to its own temp dir.
@@ -81,4 +81,6 @@ The agent cannot do these from inside. Run them from the repo root; `<name>` is 
 3. **A dead proxy closes the network, then restarts self-tested**: `docker exec -u agentproxy <name> pkill -f mitmdump`, wait 10 s, repeat check 1: same result. If the restart failed, `docker exec -u agentproxy <name> tail -n 5 /var/log/agent-proxy/mitmdump.log` says so, and the network checks must fail closed, never pass.
 4. **run.sh refuses instruction files outside git review**: `mkdir -p <project>/.sandbox-check/.claude`, then `./run.sh <profile> --name sandbox-check` must stop with `agent instruction files outside git review`; same for `touch <project>/CLAUDE.local.md`. Remove both afterwards.
 5. **A bad profile stops the start**: `EXTRA_DOC_DOMAINS=not_a_domain ./run.sh <profile> --name sandbox-check` must stop with `invalid domain entry` before Claude starts.
-6. **learn mode** (optional): `AGENT_PROXY_MODE=learn ./run.sh <profile> --name sandbox-check`, then check 1 with `<name>` = `sandbox-check`: `M1` warns, the content rules `D3`–`D11` and `X1`–`X19` are SKIP, everything else still passes.
+6. **learn mode** (optional, on an empty project): `PROJECT_PATH=$(mktemp -d) AGENT_PROXY_MODE=learn ./run.sh <profile> --name sandbox-check`, then check 1 with `<name>` = `sandbox-check`: `M1` warns, the content rules `D3`–`D13`, `X1`–`X3`, `X5`–`X19` and `X22`–`X24` are SKIP, everything else still passes (`X4` included).
+7. **Git cannot leak what is hidden**: add a folder git tracks to `profiles/<profile>/hidden.txt`; `./run.sh <profile> --name sandbox-check` must stop with `tracked by git`. Remove the line afterwards.
+8. **A planted `.git` is reported**: while an agent runs, `docker exec -u claude <name> mkdir -p /workspace/.sandbox-check/.git/x`, then quit the agent: `run.sh` must print `WARNING: created during the session` listing `.sandbox-check/.git`. Delete `.sandbox-check` afterwards.
