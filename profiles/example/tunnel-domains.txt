@@ -1,0 +1,4 @@
+# Hosts the app itself must call at runtime (captcha, payment sandbox, ...).
+# Opaque: the host is checked, the bytes inside are not, and a CDN edge host
+# reaches everything behind that CDN. Keep this list tiny, exact hosts only,
+# and never put a documentation site here - those belong in allowed-domains.txt.

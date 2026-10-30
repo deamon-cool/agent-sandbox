@@ -1,0 +1,5 @@
+# path size — size-capped RAM-backed scratch (counts against AGENT_MEMORY, wiped on exit).
+# /tmp is the disk bound: it caps everything the agent and its tools write
+# outside /workspace. A relative path hides the host's copy of that folder,
+# e.g. `backend/tmp 16m`.
+/tmp 1g

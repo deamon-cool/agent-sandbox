@@ -1,0 +1,10 @@
+# Doc hosts: GET/HEAD only, no request body, short URLs (the proxy enforces it).
+# Rule: only hosts where nobody but the project itself can publish. An exact
+# single-project GitHub Pages host qualifies (that repo's owner writes it);
+# github.com, gists, *.githubusercontent.com, npmjs.com, stackoverflow.com and
+# any wildcard over a shared suffix do not.
+developer.mozilla.org
+nodejs.org
+typescriptlang.org
+www.typescriptlang.org
+docs.npmjs.com

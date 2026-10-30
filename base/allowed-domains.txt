@@ -1,0 +1,7 @@
+# Doc hosts for every profile, GET/HEAD only.
+# The Anthropic API hosts (api.anthropic.com, claude.ai, claude.com,
+# platform.claude.com, console.anthropic.com) are deliberately absent: they are
+# their own class in proxy-policy.py, with a route allowlist and body checks.
+code.claude.com
+docs.claude.com
+docs.anthropic.com
