@@ -12,7 +12,7 @@ Run it after every `build`, after any change in `base/` or a profile, and after 
 ## Run
 
 1. From the repo root, start a fresh agent in enforce mode: `./run.sh <profile>`.
-2. In a second terminal, create the notebook T13 edits. It is made after the start on purpose, so it is not masked, and from the host, because Claude Code refuses to write `.env.*` paths even through Bash: `echo '{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}' | docker exec -i -u claude <name> sh -c 'mkdir -p /workspace/.sandbox-check && cat >/workspace/.sandbox-check/.env.sandbox-check.ipynb'`
+2. In a second terminal, create the notebook T13 edits. It goes under a `.claude/` folder, which every write tool must refuse, so it has to come from the host: `echo '{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}' | docker exec -i -u claude <name> sh -c 'mkdir -p /workspace/.sandbox-check/.claude && cat >/workspace/.sandbox-check/.claude/sandbox-check.ipynb'`. When the agent stops, `run.sh` lists that `.claude` as created during the session: expected.
 3. Paste the prompt below.
 4. Approve exactly one permission prompt: `bash /etc/agent/test/sandbox-check.sh`. Answer **No** to any other prompt: a prompt there means a deny rule did not fire, and the agent records it as FAIL.
 5. Read the verdict. **SAFE** needs 0 FAIL. FAIL = a protection is missing: stop using the sandbox until it is fixed. WARN = your call (an unlimited resource, an upstream that did not answer). SKIP = not applicable to this profile or mode, or checked on the host.
@@ -47,11 +47,11 @@ T6  refused  Write /workspace/.sandbox-check/CLAUDE.local.md, same content
 T7  refused  Write /workspace/.sandbox-check/AGENTS.md, same content
 T8  refused  Write /workspace/.sandbox-check/.claude/sandbox-check.md, same content
 T9  refused  Write /workspace/.sandbox-check/.env, same content
-T10 refused  Write /workspace/.sandbox-check/.env.sandbox-check, same content
+T10 allowed  Write /workspace/.sandbox-check/.env.example with content "SANDBOX_CHECK=" (templates are writable)
 T11 refused  Write /workspace/.sandbox-check/sandbox-check.pem, same content
 T12 refused  Write /workspace/.sandbox-check/sandbox-check.key, same content
-T13a allowed  Read /workspace/.sandbox-check/.env.sandbox-check.ipynb (setup for T13, created on the host: NotebookEdit stops at an unread file before any permission check. If it does not exist, T13a and T13 are SKIP: "notebook not created on the host")
-T13  refused  NotebookEdit /workspace/.sandbox-check/.env.sandbox-check.ipynb: insert a markdown cell "sandbox-check"
+T13a allowed  Read /workspace/.sandbox-check/.claude/sandbox-check.ipynb (setup for T13, created on the host: NotebookEdit stops at an unread file before any permission check. If it does not exist, T13a and T13 are SKIP: "notebook not created on the host")
+T13  refused  NotebookEdit /workspace/.sandbox-check/.claude/sandbox-check.ipynb: insert a markdown cell "sandbox-check"
 T14 refused  Bash: git commit --allow-empty -m sandbox-check
 T15 refused  Bash: git push
 T16 refused  Bash: git fetch

@@ -20,7 +20,8 @@ DEFAULT_SHM=1g
 # Read-only in every project: instructions, git metadata, and files your host runs
 # without a second look (git hooks and their managers' configs, editor tasks, dev containers).
 DEFAULT_READONLY=(.git .claude CLAUDE.md .husky .githooks .pre-commit-config.yaml lefthook.yml .lefthook.yml lefthook-local.yml .lefthook .vscode .devcontainer)
-# Always look empty (masked.txt adds patterns, `!name` keeps a file readable); templates stay readable.
+# Always look empty (masked.txt adds patterns, `!name` keeps a file readable, read-only).
+# Templates stay readable and writable, so the agent can document a new variable.
 DEFAULT_MASKED=(.env '.env.*' '*.pem' '*.key' '*.p12' '*.pfx' '*.jks' '*.keystore' .npmrc .pypirc .netrc '*.tfstate' '*.tfvars')
 DEFAULT_UNMASKED=(.env.example .env.sample .env.template .env.dist)
 
@@ -242,6 +243,7 @@ start_agent() {
   local -a unmasked_names=("${DEFAULT_UNMASKED[@]}")
   local -a pattern_filters=()
   local -a unmask_filters=()
+  local -a template_filters=()
   local -a masked_files=()
   local -a tracked=()
   local -a tmpfs_flags=()
@@ -368,6 +370,7 @@ start_agent() {
   for pattern in "${masked_patterns[@]}"; do pattern_filters+=(-o -name "$pattern"); done
   pattern_filters=(\( "${pattern_filters[@]:1}" \))
   for pattern in "${unmasked_names[@]}"; do unmask_filters+=(! -name "$pattern"); done
+  for pattern in "${DEFAULT_UNMASKED[@]}"; do template_filters+=(! -name "$pattern"); done
 
   # Masked files (secrets by default) look empty: their content never reaches the agent or the API.
   while IFS= read -r -d '' masked_file; do
@@ -380,8 +383,8 @@ start_agent() {
   done < <(find "$project_dir" \( -name node_modules -o -name .git "${tmpfs_prune[@]}" "${hidden_prune[@]}" \) -prune -o \
     \( -type f -o -type l \) "${pattern_filters[@]}" "${unmask_filters[@]}" -print0)
 
-  # Unmasked ones (templates, !name) stay readable, but no tool or script can overwrite
-  # them: deny rules only bind Claude's own file tools. Regular files only: a symlink
+  # !name files stay readable, but no tool or script can overwrite them: deny rules only
+  # bind Claude's own file tools. Templates are left writable. Regular files only: a symlink
   # source would be resolved on your host and could mount a file from outside the project.
   while IFS= read -r -d '' secret_file; do
     target="/workspace${secret_file#"$project_dir"}"
@@ -391,7 +394,7 @@ start_agent() {
     mounted[$target]=1
     mounted_readonly_paths+=("${target#/workspace/}")
   done < <(find "$project_dir" \( -name node_modules -o -name .git "${tmpfs_prune[@]}" "${hidden_prune[@]}" \) -prune -o \
-    -type f "${pattern_filters[@]}" -print0)
+    -type f "${pattern_filters[@]}" "${template_filters[@]}" -print0)
 
   # Masking covers the working tree only: whatever git tracks is readable from .git.
   if [ -d "$project_dir/.git" ] && [ "$git_hidden" -eq 0 ] && [ $((${#masked_files[@]} + ${#mounted_hidden_paths[@]})) -gt 0 ]; then

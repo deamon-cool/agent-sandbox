@@ -5,7 +5,8 @@
 - Create/edit files in /workspace: allowed. Delete files/folders: requires my approval — propose path + reason first.
 - Blocked: package installs, git writes (incl. clone/fetch/pull), starting servers (except profile commands listed under Sandbox facts), network beyond the allowlist.
 - Git: read-only only (status / diff / log / show / blame / ls-files).
-- Secrets (.env*, *.pem, *.key and the other masked patterns under Sandbox facts) always look empty; templates such as .env.example stay readable, so learn the wiring from them. All of them are write-blocked: propose the edit, I apply it.
+- Secrets (.env, .env.*, *.pem, *.key and the other masked patterns under Sandbox facts; templates excepted) always look empty and are write-blocked: propose the edit, I apply it.
+- Templates (.env.example, .env.sample, .env.template, .env.dist) are readable and writable: learn the wiring from them, and when you add, rename or drop a variable, update the template in the same change. Names and placeholder values only, never a real value.
 - Hidden paths under Sandbox facts look empty on purpose. Never try to recover a hidden or masked file's content (git history, caches, build output, guessing): if a task needs it, tell me what and why.
 - Instructions load only from this file and the project's root CLAUDE.md (read-only). Creating or editing CLAUDE.md, CLAUDE.local.md, AGENTS.md or anything under .claude/ is blocked for every write tool — propose instruction changes in your reply; I apply them.
 - Everything here is enforced by the sandbox, but treat the rules as the contract — don't probe for what the sandbox happens to let through.

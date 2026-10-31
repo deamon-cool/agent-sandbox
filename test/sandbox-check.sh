@@ -371,11 +371,40 @@ else
     fi
   done
 fi
-nested="$(find /workspace \( -name node_modules -o -name .git \) -prune -o \( -name CLAUDE.local.md -o \( -type d -name .claude ! -path /workspace/.claude \) \) -print 2>/dev/null | head -n 5 | tr '\n' ' ')"
+# .sandbox-check is this test's own scratch folder (TEST.md creates a .claude/ in it on purpose)
+nested="$(find /workspace \( -name node_modules -o -name .git -o -path /workspace/.sandbox-check \) -prune -o \
+  \( -name CLAUDE.local.md -o \( \( -type d -o -type l \) -name .claude ! -path /workspace/.claude \) \) -print 2>/dev/null | head -n 5 | tr '\n' ' ')"
 if [ -z "$nested" ]; then
   result PASS F4 "no CLAUDE.local.md or nested .claude/ in the project"
 else
   result FAIL F4 "no CLAUDE.local.md or nested .claude/ in the project" "$nested"
+fi
+# templates are writable, except where readonly.txt or !name in masked.txt locks them
+if [ "${UNMASKED[0]:-none}" = none ]; then
+  result SKIP F9 "secret templates are writable" "no template names"
+else
+  templates=0
+  locked=()
+  for pattern in "${UNMASKED[@]}"; do
+    while IFS= read -r -d '' path; do
+      rel="${path#/workspace/}"
+      kept=0
+      for ro in "${READONLY[@]}"; do
+        if [[ $rel == "$ro" || $rel == "$ro"/* ]]; then kept=1; fi
+      done
+      [ "$kept" -eq 0 ] || continue
+      templates=$((templates + 1))
+      [ -w "$path" ] || locked+=("$rel")
+    done < <(find /workspace \( -name node_modules -o -name .git -o -path /workspace/.sandbox-check \) -prune -o \
+      -type f -name "$pattern" -print0 2>/dev/null)
+  done
+  if [ "${#locked[@]}" -gt 0 ]; then
+    result FAIL F9 "secret templates are writable" "read-only: ${locked[*]}"
+  elif [ "$templates" -eq 0 ]; then
+    result SKIP F9 "secret templates are writable" "no template file in the project"
+  else
+    result PASS F9 "secret templates are writable" "$templates files"
+  fi
 fi
 left=()
 for name in CLAUDE.md rules skills agents commands output-styles hooks agent-memory settings.local.json; do
@@ -418,7 +447,7 @@ works S2 "bypass mode off; only managed permissions, hooks and MCP; no auto memo
 if missing="$(jq -r '
   (.permissions.deny // []) as $deny
   | [("//home/claude/**", "**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md", "**/.claude/**",
-      "**/.env", "**/.env.*", "**/*.pem", "**/*.key") | "Edit(\(.))"]
+      "**/.env", "**/*.pem", "**/*.key") | "Edit(\(.))"]
   + ["Read(//home/claude/**)"]
   + [("push", "commit", "merge", "rebase", "cherry-pick", "revert", "am", "stash", "checkout", "switch",
       "restore", "clean", "reset", "rm", "mv", "apply", "-c", "-C", "--git-dir", "--work-tree",
