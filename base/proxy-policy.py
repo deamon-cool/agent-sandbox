@@ -69,6 +69,7 @@ API_ROUTES = {
         route("GET POST", "prefix", "/api/oauth/"),
     ),
     "claude.com": (
+        route("GET", "exact", "/docs"),
         route("GET", "prefix", "/docs/"),
         route("GET POST", "prefix", "/oauth/"),
     ),
@@ -76,6 +77,7 @@ API_ROUTES = {
         route("GET POST", "prefix", "/v1/oauth/"),
         route("GET POST", "prefix", "/oauth/"),
         route("GET POST", "prefix", "/api/oauth/"),
+        route("GET", "exact", "/docs"),
         route("GET", "prefix", "/docs/"),
         route("GET", "exact", "/llms.txt"),
     ),

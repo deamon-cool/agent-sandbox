@@ -296,6 +296,7 @@ content X24 "WebSocket upgrade to the API refused" "connection upgrade" --http1.
   -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: c2FuZGJveC1jaGVjay0xMg==' "https://$API/api/claude_code/sandbox-check"
 passes X20 "model list reaches Anthropic" "https://$API/v1/models"
 passes X21 "clean message reaches Anthropic" -H 'content-type: application/json' --data "$(message '{"type":"text","text":"sandbox-check"}')" "https://$API/v1/messages"
+passes X26 "Claude docs start page reaches Anthropic (docs.claude.com redirects there)" https://platform.claude.com/docs
 passes X25 "client tools and web search reach Anthropic" -H 'content-type: application/json' \
   --data '{"model":"sandbox-check","max_tokens":1,"tools":[{"name":"Bash","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search","max_uses":1}],"messages":[{"role":"user","content":"sandbox-check"}]}' \
   "https://$API/v1/messages"
@@ -333,7 +334,8 @@ else
     while IFS= read -r -d '' path; do
       masked=$((masked + 1))
       if [ ! -c "$path" ] && [ -s "$path" ]; then leaked+=("${path#/workspace/}"); fi
-    done < <(find /workspace \( -name node_modules -o -name .git \) -prune -o ! -type d -name "$pattern" "${keep[@]}" -print0 2>/dev/null)
+    done < <(find /workspace \( -name node_modules -o -name .git -o -path /workspace/.sandbox-check \) -prune -o \
+      ! -type d -name "$pattern" "${keep[@]}" -print0 2>/dev/null)
   done
   if [ "${#leaked[@]}" -gt 0 ]; then
     result FAIL F2 "masked files read as empty" "readable: ${leaked[*]}"
