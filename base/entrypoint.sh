@@ -50,7 +50,8 @@ start_proxy() {
   )
   # tunnel hosts are the only ones left opaque (the policy checks their TLS SNI); everything else is inspected
   args+=(-s "$BASE/proxy-policy.py")
-  setsid gosu agentproxy env -i \
+  # -C /: the proxy must not run from /workspace, a folder the agent writes
+  setsid gosu agentproxy env -i -C / \
     PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/nonexistent PYTHONDONTWRITEBYTECODE=1 \
     AGENT_PROXY_MODE="$MODE" \
     AGENT_PROXY_ALLOWED="$POLICY/allowed-hosts.txt" \
@@ -61,8 +62,13 @@ start_proxy() {
   PROXY_PID=$!
 }
 
+# The first proxy's parent becomes `claude` (exec), which never reaps it: a dead
+# proxy stays a zombie with a /proc entry, so check its state and owner instead.
 proxy_alive() {
-  [ -n "$PROXY_PID" ] && [ -d "/proc/$PROXY_PID" ]
+  local state
+  [ -n "$PROXY_PID" ] || return 1
+  state="$(awk '$1 == "State:" {print $2}' "/proc/$PROXY_PID/status" 2>/dev/null)" || return 1
+  [[ -n $state && $state != [ZX] ]] && [ "$(stat -c %u "/proc/$PROXY_PID" 2>/dev/null)" = "$PROXY_UID" ]
 }
 
 wait_proxy() {
@@ -84,32 +90,34 @@ install_ca() {
   update-ca-certificates >/dev/null 2>&1 || fail "could not install the proxy CA"
 }
 
-probe() {
-  local format="$1"
+connect_code() {
+  curl -s -o /dev/null -w '%{http_connect}' --max-time 10 -x "$PROXY_URL" "$1" 2>/dev/null || true
+}
+
+# The proxy's own refusal names its reason; a 403 from upstream would not.
+proxy_refuses() {
+  local reason="$1"
   shift
-  curl -s -o /dev/null -w "$format" --max-time 10 -x "$PROXY_URL" "$@" 2>/dev/null || true
+  [[ "$(curl -s --max-time 10 -x "$PROXY_URL" "$@" 2>/dev/null || true)" == *"blocked by agent proxy: $reason"* ]]
 }
 
 # Guards answered by the proxy itself (connection_strategy=lazy means no packet
 # reaches the internet): unknown host, a tunnel host's TLS SNI on another host,
-# forbidden Anthropic route, url source in a message, write to a doc host. Any of
-# them passing means the policy is not in force. learn mode reports content
-# violations instead of blocking them, so there only the host gates hold.
+# foreign API key, forbidden Anthropic route, url source in a message, unknown
+# server tool, write to a doc host. Any of them passing means the policy is not in
+# force. learn mode reports content violations instead of blocking them, so there
+# only the hard gates are probed.
 self_test() {
-  if [ "$(probe '%{http_connect}' https://agent-selftest.invalid/)" != 403 ]; then
-    return 1
-  fi
+  [ "$(connect_code https://agent-selftest.invalid/)" = 403 ] || return 1
   if [ "${#tunnels[@]}" -gt 0 ]; then
-    local t="${tunnels[0]}"
-    [[ "$(curl -s --max-time 10 -x "$PROXY_URL" --connect-to "$t:443:api.anthropic.com:443" "https://$t/" 2>/dev/null || true)" == *"tls sni mismatch"* ]] ||
-      return 1
+    proxy_refuses "tls sni mismatch" --connect-to "${tunnels[0]}:443:api.anthropic.com:443" "https://${tunnels[0]}/" || return 1
   fi
-  if [ "$MODE" = learn ]; then
-    return 0
-  fi
-  [ "$(probe '%{http_code}' -X POST https://api.anthropic.com/v1/files)" = 403 ] &&
-    [ "$(probe '%{http_code}' --data '{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://agent-selftest.invalid/"}}]}]}' https://api.anthropic.com/v1/messages)" = 403 ] &&
-    [ "$(probe '%{http_code}' -X POST https://docs.claude.com/)" = 403 ]
+  proxy_refuses "header x-api-key" -H 'x-api-key: agent-selftest' https://api.anthropic.com/v1/models || return 1
+  [ "$MODE" = enforce ] || return 0
+  proxy_refuses "route not allowed" -X POST https://api.anthropic.com/v1/files &&
+    proxy_refuses "url source" --data '{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://agent-selftest.invalid/"}}]}]}' https://api.anthropic.com/v1/messages &&
+    proxy_refuses "tool agent_selftest" --data '{"tools":[{"type":"agent_selftest","name":"agent_selftest"}]}' https://api.anthropic.com/v1/messages &&
+    proxy_refuses "method POST" -X POST https://docs.claude.com/
 }
 
 stop_proxy() {
@@ -125,7 +133,9 @@ case "$MODE" in enforce | learn) ;; *) fail "AGENT_PROXY_MODE must be enforce or
 [ -d /workspace ] || fail "/workspace is not mounted"
 [ -d "$HOME_DIR" ] || fail "$HOME_DIR is not mounted"
 PROXY_UID="$(id -u agentproxy)"
+PROXY_GID="$(id -g agentproxy)"
 [ "$PUID" != "$PROXY_UID" ] || fail "HOST_UID $PUID collides with the proxy user"
+[ "$PGID" != "$PROXY_GID" ] || fail "HOST_GID $PGID collides with the proxy group (it can read the proxy logs and host lists)"
 
 getent group claude >/dev/null || groupadd -o -g "$PGID" claude
 id claude >/dev/null 2>&1 || useradd -o -u "$PUID" -g "$PGID" -M -d "$HOME_DIR" -s /bin/bash claude
@@ -221,7 +231,9 @@ fi
   printf '\n## Sandbox facts (generated at start)\n'
   printf -- '- Project profile: %s (read-only at %s)\n' "$PROJECT" "$PROFILE"
   printf -- '- Read-only in /workspace: %s\n' "${AGENT_FACTS_READONLY:-.git .claude CLAUDE.md}"
+  printf -- '- Hidden, always empty: %s\n' "${AGENT_FACTS_HIDDEN:-none}"
   printf -- '- Masked, always empty: %s\n' "${AGENT_FACTS_MASKED:-none}"
+  printf -- '- Not masked: %s\n' "${AGENT_FACTS_UNMASKED:-none}"
   printf -- '- Size-capped tmpfs (RAM-backed, wiped on exit): %s\n' "${AGENT_FACTS_TMPFS:-none}"
   printf -- '- Profile commands: %s\n' "${commands[*]:-none}"
   printf -- '- Doc hosts (GET/HEAD only, no body, short URLs): %s/allowed-domains.txt\n' "$CC"
@@ -243,12 +255,12 @@ install -m 0640 -o root -g agentproxy /dev/null "$PROXY_LOGS/mitmdump.log"
 
 iptables -F OUTPUT
 iptables -P OUTPUT DROP
-iptables -A OUTPUT -d 127.0.0.11 -m owner --uid-owner "$PROXY_UID" -j ACCEPT
+iptables -A OUTPUT -d 127.0.0.11 -m owner --uid-owner "$PROXY_UID" -j ACCEPT ||
+  fail "iptables owner match unavailable (the host needs the xt_owner module)"
 iptables -A OUTPUT -d 127.0.0.11 -j DROP
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A OUTPUT -p tcp --dport 443 -m owner --uid-owner "$PROXY_UID" -j ACCEPT ||
-  fail "iptables owner match unavailable (the host needs the xt_owner module)"
+iptables -A OUTPUT -p tcp --dport 443 -m owner --uid-owner "$PROXY_UID" -j ACCEPT
 iptables -F INPUT
 iptables -P INPUT DROP
 iptables -A INPUT -i lo -j ACCEPT

@@ -7,10 +7,12 @@ into exactly one class:
 
   api     Anthropic hosts. Only the routes Claude Code itself uses pass, and
           /v1/messages bodies are checked, so the client cannot ask Anthropic's
-          side to fetch a URL, run code or dial an MCP server on its behalf.
+          side to fetch a URL, run code or dial an MCP server on its behalf:
+          server tools are an allowlist, so a new server tool stays blocked
+          until it is reviewed here.
   docs    every host in the allowlist. The request is shaped down to reading:
-          GET/HEAD, no body, small URL and header budget, credentials stripped.
-          A doc host cannot be used to post the repo out.
+          GET/HEAD, no body, small URL and header budget, credentials stripped,
+          no connection upgrade. A doc host cannot be used to post the repo out.
   tunnel  hosts listed in the profile's tunnel-domains.txt. The CONNECT host is checked
           and the TLS SNI must name that same host; the bytes inside are not. For
           the app's own runtime calls (e.g. a captcha API) - never for documentation.
@@ -37,13 +39,9 @@ DOCS_STRIP_HEADERS = ("authorization", "cookie", "x-api-key")
 API_BLOCK_HEADERS = ("x-api-key",)
 API_BODY_PATHS = frozenset(("/v1/messages", "/v1/messages/count_tokens"))
 API_BLOCKED_BODY_KEYS = ("mcp_servers", "container")
-API_BLOCKED_TOOL_TYPES = (
-    "web_fetch",
-    "code_execution",
-    "bash_code_execution",
-    "text_editor_code_execution",
-    "mcp_toolset",
-)
+# Client tools have no type (or "custom"); server tools run on Anthropic's side.
+# Only these server tools pass: search, and search over the request's own tools.
+API_ALLOWED_TOOL_PREFIXES = ("web_search_", "tool_search_tool_")
 API_SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._~-]+$")
 UNSAFE_CHARS = re.compile(r"[\x00-\x20\x7f]")
 
@@ -71,6 +69,7 @@ API_ROUTES = {
         route("GET POST", "prefix", "/api/oauth/"),
     ),
     "claude.com": (
+        route("GET", "exact", "/docs"),
         route("GET", "prefix", "/docs/"),
         route("GET POST", "prefix", "/oauth/"),
     ),
@@ -78,6 +77,7 @@ API_ROUTES = {
         route("GET POST", "prefix", "/v1/oauth/"),
         route("GET POST", "prefix", "/oauth/"),
         route("GET POST", "prefix", "/api/oauth/"),
+        route("GET", "exact", "/docs"),
         route("GET", "prefix", "/docs/"),
         route("GET", "exact", "/llms.txt"),
     ),
@@ -163,9 +163,25 @@ def has_url_source(value):
     return False
 
 
+class DuplicateKey(ValueError):
+    pass
+
+
+def unique_keys(pairs):
+    """Two parsers may keep different copies of a repeated key: refuse instead of guessing."""
+    data = {}
+    for key, value in pairs:
+        if key in data:
+            raise DuplicateKey(key)
+        data[key] = value
+    return data
+
+
 def api_body_violation(text):
     try:
-        data = json.loads(text)
+        data = json.loads(text, object_pairs_hook=unique_keys)
+    except DuplicateKey as error:
+        return f"duplicate key {error}"
     except ValueError:
         return "body is not json"
     if not isinstance(data, dict):
@@ -179,8 +195,10 @@ def api_body_violation(text):
     for tool in tools:
         if not isinstance(tool, dict):
             return "tool is not an object"
-        kind = tool.get("type")
-        if isinstance(kind, str) and kind.startswith(API_BLOCKED_TOOL_TYPES):
+        kind = tool.get("type", "custom")
+        if not isinstance(kind, str):
+            return "tool type is not a string"
+        if kind != "custom" and not kind.startswith(API_ALLOWED_TOOL_PREFIXES):
             return f"tool {kind}"
     if has_url_source(data):
         return "url source"
@@ -188,9 +206,8 @@ def api_body_violation(text):
 
 
 def api_violation(request, host, method):
-    for name in API_BLOCK_HEADERS:
-        if name in request.headers:
-            return f"header {name}"
+    if "upgrade" in request.headers:
+        return "connection upgrade"
     clean = request.path.split("?", 1)[0].split("#", 1)[0]
     if not api_path_ok(clean):
         return "unsafe path"
@@ -208,8 +225,14 @@ def docs_violation(request, method):
     """Doc hosts are for reading: no writes, and no room to smuggle data out."""
     if method not in DOCS_METHODS:
         return f"method {method} (doc hosts are read-only)"
-    if "transfer-encoding" in request.headers or body_bytes(request) > 0:
+    if (
+        "transfer-encoding" in request.headers
+        or request.headers.get("content-length", "0").strip() not in ("", "0")
+        or body_bytes(request) > 0
+    ):
         return "request body"
+    if "upgrade" in request.headers:
+        return "connection upgrade"
     clean, _, query = request.path.split("#", 1)[0].partition("?")
     if not clean.startswith("/"):
         return "unsafe path"
@@ -335,6 +358,11 @@ class AgentPolicy:
             self.record(decision="allow", **event)
             return
         if kind == "api":
+            # A foreign API key is how a repo lands in someone else's account: blocked even in learn mode.
+            blocked_header = next((name for name in API_BLOCK_HEADERS if name in request.headers), None)
+            if blocked_header:
+                self.refuse(flow, event, f"header {blocked_header}", hard=True)
+                return
             reason = api_violation(request, host, method)
         else:
             reason = docs_violation(request, method)

@@ -8,7 +8,6 @@
       "Edit(**/AGENTS.md)",
       "Edit(**/.claude/**)",
       "Edit(**/.env)",
-      "Edit(**/.env.*)",
       "Edit(**/*.pem)",
       "Edit(**/*.key)",
       "Bash(git push:*)",

@@ -137,7 +137,9 @@ limit() {
 
 MODE="$(fact 'Proxy mode')"
 read -r -a READONLY <<<"$(fact 'Read-only in /workspace')"
+read -r -a HIDDEN <<<"$(fact 'Hidden, always empty')"
 read -r -a MASKED <<<"$(fact 'Masked, always empty')"
+read -r -a UNMASKED <<<"$(fact 'Not masked')"
 read -r -a TMPFS <<<"$(fact 'Size-capped tmpfs (RAM-backed, wiped on exit)')"
 mapfile -t TUNNELS < <(grep -v '^[[:space:]]*$' "$CC/tunnel-domains.txt" 2>/dev/null)
 DOC=docs.claude.com
@@ -201,7 +203,11 @@ refused N1 "no direct TCP out (1.1.1.1:443, no proxy)" timeout 5 bash -c 'exec 3
 refused N2 "no direct UDP out (1.1.1.1:53)" timeout 5 bash -c 'echo x >/dev/udp/1.1.1.1/53'
 refused N3 "no DNS for the agent (no data out through lookups)" timeout 5 getent hosts example.com
 refused N4 "Docker's DNS server unreachable for the agent" timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.11/53'
-works N5 "IPv6 is off" grep -qx 1 /proc/sys/net/ipv6/conf/all/disable_ipv6
+if [ -d /proc/sys/net/ipv6 ]; then
+  works N5 "IPv6 is off" grep -qx 1 /proc/sys/net/ipv6/conf/all/disable_ipv6
+else
+  result PASS N5 "IPv6 is off" "kernel without IPv6"
+fi
 listen="$(awk '$4 == "0A" && $2 ~ /:1FB6$/ {print $2}' /proc/net/tcp | sort -u | tr '\n' ' ')"
 if [ "$listen" = "0100007F:1FB6 " ]; then
   result PASS N6 "proxy listens on 127.0.0.1:8118 only"
@@ -258,6 +264,8 @@ content D8 "path over 256 bytes refused" "path over 256 bytes" "https://$DOC/$(p
 content D9 "query over 96 bytes refused" "query over 96 bytes" "https://$DOC/?q=$(pad 120)"
 content D10 "headers over 2 kB refused" "headers over 2048 bytes" -H "X-Sandbox-Check: $(pad 2100)" "https://$DOC/"
 content D11 "dot-dot path refused" "unsafe path" --path-as-is "https://$DOC/a/../b"
+content D13 "WebSocket upgrade refused" "connection upgrade" --http1.1 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: c2FuZGJveC1jaGVjay0xMg==' "https://$DOC/"
 send -H 'Authorization: Bearer sandbox-check' -H 'Cookie: sandbox=check' "https://$DOC/sandbox-check"
 result SKIP D12 "credentials are stripped on doc hosts" "check on the host: ./run.sh <profile> proxy-log | grep /sandbox-check"
 
@@ -265,7 +273,7 @@ echo "== Anthropic API"
 content X1 "Files API upload refused" "route not allowed" -X POST "https://$API/v1/files"
 content X2 "Files API listing refused" "route not allowed" "https://$API/v1/files"
 content X3 "Message Batches refused" "route not allowed" -X POST "https://$API/v1/messages/batches"
-content X4 "foreign API key refused" "header x-api-key" -H 'x-api-key: sandbox-check' "https://$API/v1/models"
+blocked X4 "foreign API key refused, in learn mode too" "header x-api-key" -H 'x-api-key: sandbox-check' "https://$API/v1/models"
 content X5 "dot-dot API path refused" "unsafe path" --path-as-is "https://$API/v1/messages/../files"
 content X6 "encoded dot-dot API path refused" "unsafe path" --path-as-is "https://$API/v1/%2e%2e/files"
 content X7 "claude.ai route outside OAuth refused" "route not allowed" https://claude.ai/api/organizations
@@ -282,8 +290,16 @@ api_body X17 "URL on count_tokens refused" "url source" "$(message "$IMAGE_URL")
 message "$IMAGE_URL" | gzip -c >"$TMP/message.gz"
 content X18 "URL inside a gzip body refused" "url source" -H 'content-type: application/json' -H 'content-encoding: gzip' --data-binary "@$TMP/message.gz" "https://$API/v1/messages"
 content X19 "unknown body encoding refused" "body decode failed" -H 'content-type: application/json' -H 'content-encoding: sandbox-check' --data '{}' "https://$API/v1/messages"
+api_body X22 "unknown server tool refused (allowlist)" "tool sandbox_check" '{"tools":[{"type":"sandbox_check_20990101","name":"sandbox_check"}]}'
+api_body X23 "duplicate JSON key refused" "duplicate key tools" '{"tools":[],"tools":[]}'
+content X24 "WebSocket upgrade to the API refused" "connection upgrade" --http1.1 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: c2FuZGJveC1jaGVjay0xMg==' "https://$API/api/claude_code/sandbox-check"
 passes X20 "model list reaches Anthropic" "https://$API/v1/models"
 passes X21 "clean message reaches Anthropic" -H 'content-type: application/json' --data "$(message '{"type":"text","text":"sandbox-check"}')" "https://$API/v1/messages"
+passes X26 "Claude docs start page reaches Anthropic (docs.claude.com redirects there)" https://platform.claude.com/docs
+passes X25 "client tools and web search reach Anthropic" -H 'content-type: application/json' \
+  --data '{"model":"sandbox-check","max_tokens":1,"tools":[{"name":"Bash","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search","max_uses":1}],"messages":[{"role":"user","content":"sandbox-check"}]}' \
+  "https://$API/v1/messages"
 
 echo "== files"
 read_only=0
@@ -306,20 +322,42 @@ else
   result PASS F1 "read-only project paths cannot be written" "$read_only paths${absent[*]:+, absent: ${absent[*]}}"
 fi
 if [ "${#MASKED[@]}" -eq 0 ] || [ "${MASKED[0]}" = none ]; then
-  result SKIP F2 "masked files read as empty" "no masked.txt in this profile"
+  result SKIP F2 "masked files read as empty" "no masked patterns"
 else
   masked=0
   leaked=()
+  keep=()
+  if [ "${UNMASKED[0]:-none}" != none ]; then
+    for pattern in "${UNMASKED[@]}"; do keep+=(! -name "$pattern"); done
+  fi
   for pattern in "${MASKED[@]}"; do
     while IFS= read -r -d '' path; do
       masked=$((masked + 1))
       if [ ! -c "$path" ] && [ -s "$path" ]; then leaked+=("${path#/workspace/}"); fi
-    done < <(find /workspace \( -name node_modules -o -name .git \) -prune -o ! -type d -name "$pattern" -print0 2>/dev/null)
+    done < <(find /workspace \( -name node_modules -o -name .git -o -path /workspace/.sandbox-check \) -prune -o \
+      ! -type d -name "$pattern" "${keep[@]}" -print0 2>/dev/null)
   done
   if [ "${#leaked[@]}" -gt 0 ]; then
     result FAIL F2 "masked files read as empty" "readable: ${leaked[*]}"
   else
     result PASS F2 "masked files read as empty" "$masked files"
+  fi
+fi
+if [ "${#HIDDEN[@]}" -eq 0 ] || [ "${HIDDEN[0]}" = none ]; then
+  result SKIP F8 "hidden paths read as empty" "no hidden.txt in this profile"
+else
+  shown=()
+  for path in "${HIDDEN[@]}"; do
+    if [ -d "/workspace/$path" ] && [ -n "$(ls -A "/workspace/$path" 2>/dev/null)" ]; then
+      shown+=("$path")
+    elif [ -f "/workspace/$path" ] && [ -s "/workspace/$path" ]; then
+      shown+=("$path")
+    fi
+  done
+  if [ "${#shown[@]}" -gt 0 ]; then
+    result FAIL F8 "hidden paths read as empty" "visible: ${shown[*]}"
+  else
+    result PASS F8 "hidden paths read as empty" "${#HIDDEN[@]} paths"
   fi
 fi
 if [ "${#TMPFS[@]}" -eq 0 ] || [ "${TMPFS[0]}" = none ]; then
@@ -333,11 +371,40 @@ else
     fi
   done
 fi
-nested="$(find /workspace \( -name node_modules -o -name .git \) -prune -o \( -name CLAUDE.local.md -o \( -type d -name .claude ! -path /workspace/.claude \) \) -print 2>/dev/null | head -n 5 | tr '\n' ' ')"
+# .sandbox-check is this test's own scratch folder (TEST.md creates a .claude/ in it on purpose)
+nested="$(find /workspace \( -name node_modules -o -name .git -o -path /workspace/.sandbox-check \) -prune -o \
+  \( -name CLAUDE.local.md -o \( \( -type d -o -type l \) -name .claude ! -path /workspace/.claude \) \) -print 2>/dev/null | head -n 5 | tr '\n' ' ')"
 if [ -z "$nested" ]; then
   result PASS F4 "no CLAUDE.local.md or nested .claude/ in the project"
 else
   result FAIL F4 "no CLAUDE.local.md or nested .claude/ in the project" "$nested"
+fi
+# templates are writable, except where readonly.txt or !name in masked.txt locks them
+if [ "${UNMASKED[0]:-none}" = none ]; then
+  result SKIP F9 "secret templates are writable" "no template names"
+else
+  templates=0
+  locked=()
+  for pattern in "${UNMASKED[@]}"; do
+    while IFS= read -r -d '' path; do
+      rel="${path#/workspace/}"
+      kept=0
+      for ro in "${READONLY[@]}"; do
+        if [[ $rel == "$ro" || $rel == "$ro"/* ]]; then kept=1; fi
+      done
+      [ "$kept" -eq 0 ] || continue
+      templates=$((templates + 1))
+      [ -w "$path" ] || locked+=("$rel")
+    done < <(find /workspace \( -name node_modules -o -name .git -o -path /workspace/.sandbox-check \) -prune -o \
+      -type f -name "$pattern" -print0 2>/dev/null)
+  done
+  if [ "${#locked[@]}" -gt 0 ]; then
+    result FAIL F9 "secret templates are writable" "read-only: ${locked[*]}"
+  elif [ "$templates" -eq 0 ]; then
+    result SKIP F9 "secret templates are writable" "no template file in the project"
+  else
+    result PASS F9 "secret templates are writable" "$templates files"
+  fi
 fi
 left=()
 for name in CLAUDE.md rules skills agents commands output-styles hooks agent-memory settings.local.json; do
@@ -380,7 +447,7 @@ works S2 "bypass mode off; only managed permissions, hooks and MCP; no auto memo
 if missing="$(jq -r '
   (.permissions.deny // []) as $deny
   | [("//home/claude/**", "**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md", "**/.claude/**",
-      "**/.env", "**/.env.*", "**/*.pem", "**/*.key") | "Edit(\(.))"]
+      "**/.env", "**/*.pem", "**/*.key") | "Edit(\(.))"]
   + ["Read(//home/claude/**)"]
   + [("push", "commit", "merge", "rebase", "cherry-pick", "revert", "am", "stash", "checkout", "switch",
       "restore", "clean", "reset", "rm", "mv", "apply", "-c", "-C", "--git-dir", "--work-tree",

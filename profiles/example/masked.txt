@@ -1,0 +1,4 @@
+# File name patterns that always look empty, on top of the secret defaults in run.sh
+# (.env, .env.*, *.pem, *.key, ...). `!name` keeps a file readable, e.g.:
+# *.secret.json
+# !.env.test
